@@ -45,6 +45,7 @@ trail_left = deque(maxlen=10)
 trail_right = deque(maxlen=10)
 
 JUMP_THRESHOLD = 0.06
+HALF_THRESHOLD = JUMP_THRESHOLD * 0.5
 
 show_gif = False
 gif_start = 0
@@ -53,6 +54,10 @@ gif_index = 0
 # FPS tracking
 prev_time = time.time()
 fps = 0
+last_fps_report = 0
+
+# Hand tracking logs
+prev_hand_count = 0
 
 # ------------------------------
 # Fullscreen Window
@@ -68,6 +73,7 @@ cv2.setNumThreads(8)
 while True:
     ret, frame = cap.read()
     if not ret:
+        print("[ERROR] Failed to read frame from camera.")
         break
 
     cam_h, cam_w, _ = frame.shape
@@ -83,6 +89,11 @@ while True:
     fps = 1 / (curr_time - prev_time)
     prev_time = curr_time
 
+    # Only log FPS if changed significantly
+    if abs(fps - last_fps_report) > 5:
+        print(f"[FPS] {fps:.1f}")
+        last_fps_report = fps
+
     # Run MediaPipe
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = mp_hands.process(rgb)
@@ -91,6 +102,14 @@ while True:
     right_y = None
     left_pt = None
     right_pt = None
+
+    # ------------------------------
+    # Hand Detection Logging
+    # ------------------------------
+    hand_count = len(result.multi_hand_landmarks) if result.multi_hand_landmarks else 0
+    if hand_count != prev_hand_count:
+        print(f"[HANDS] Detected {hand_count} hand(s)")
+        prev_hand_count = hand_count
 
     # ------------------------------
     # Tracking Overlay
@@ -110,7 +129,9 @@ while True:
             center_pt = (center_x, center_y)
 
             label = handedness.classification[0].label
-            color = (0,255,0) if label == "Left" else (0,128,255)
+
+            # LOG HAND POSITION OCCASIONALLY
+            print(f"[{label}] Center pos = {center_pt}")
 
             # Add to motion trail
             if label == "Left":
@@ -119,14 +140,14 @@ while True:
                 trail_right.append(center_pt)
 
             # Draw tracking points
-            cv2.circle(output, wrist_px, 10, color, -1)
-            cv2.circle(output, palm_px, 10, color, -1)
+            cv2.circle(output, wrist_px, 10, (0,255,0) if label=="Left" else (0,128,255), -1)
+            cv2.circle(output, palm_px, 10, (0,255,0) if label=="Left" else (0,128,255), -1)
             cv2.circle(output, center_pt, 14, (255,0,0), -1)
 
-            cv2.line(output, wrist_px, palm_px, color, 3)
+            cv2.line(output, wrist_px, palm_px, (0,255,0) if label=="Left" else (0,128,255), 3)
             cv2.line(output, palm_px, center_pt, (255,0,0), 3)
 
-            # Assign Y for gesture detection
+            # Assign Y
             if label == "Left":
                 left_y = center_y / cam_h
                 left_pt = center_pt
@@ -135,21 +156,11 @@ while True:
                 right_pt = center_pt
 
     # ------------------------------
-    # Draw Motion Trails
-    # ------------------------------
-    # Left trail (green)
-    for i in range(1, len(trail_left)):
-        cv2.line(output, trail_left[i-1], trail_left[i], (0,255,0), 4)
-
-    # Right trail (orange)
-    for i in range(1, len(trail_right)):
-        cv2.line(output, trail_right[i-1], trail_right[i], (0,128,255), 4)
-
-    # ------------------------------
     # Update motion buffers
     # ------------------------------
     if left_y is not None:
         buffer_left.append(left_y)
+
     if right_y is not None:
         buffer_right.append(right_y)
 
@@ -157,52 +168,47 @@ while True:
     # FAST 6-7 Gesture Detection
     # ------------------------------
     if len(buffer_left) == 5 and len(buffer_right) == 5:
+
         left_jump = buffer_left[0] - buffer_left[-1]
         right_jump = buffer_right[0] - buffer_right[-1]
 
-        # Show debug text
-        if left_pt:
-            cv2.putText(output, f"L={left_jump:.2f}", (left_pt[0]+20, left_pt[1]),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
-
-        if right_pt:
-            cv2.putText(output, f"R={right_jump:.2f}", (right_pt[0]+20, right_pt[1]),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,128,255), 2)
+        # Log if movement is noticeable
+        if abs(left_jump) > HALF_THRESHOLD or abs(right_jump) > HALF_THRESHOLD:
+            print(f"[MOTION] LeftJump={left_jump:.3f} RightJump={right_jump:.3f}")
 
         gesture = False
 
         # Left up + right down
         if left_jump > JUMP_THRESHOLD and right_jump < -JUMP_THRESHOLD:
+            print("[GESTURE] Left UP + Right DOWN detected")
             gesture = True
 
         # Right up + left down
         if right_jump > JUMP_THRESHOLD and left_jump < -JUMP_THRESHOLD:
+            print("[GESTURE] Right UP + Left DOWN detected")
             gesture = True
 
         if gesture:
+            if not show_gif:
+                print("[GIF] Starting GIF playback")
             show_gif = True
             gif_start = time.time()
             gif_index = 0
-            cv2.putText(output, "SIX SEVEN!", (40, 80),
-                        cv2.FONT_HERSHEY_DUPLEX, 1.3, (0,0,255), 3)
 
     # ------------------------------
-    # GIF on right half
+    # GIF Playback Logging
     # ------------------------------
     if show_gif:
         gif_frame = cv2.resize(gif_frames[gif_index], (cam_w, cam_h))
         output[:, cam_w:out_w] = gif_frame
+
         gif_index = (gif_index + 1) % len(gif_frames)
 
         if time.time() - gif_start > 1.5:
+            print("[GIF] Finished GIF playback")
             show_gif = False
     else:
         output[:, cam_w:out_w] = (40, 40, 40)
-
-    # ------------------------------
-    # Draw FPS on screen
-    # ------------------------------
-    cv2.putText(output, f"FPS: {int(fps)}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,255), 3)
 
     # ------------------------------
     # Fullscreen Scale
@@ -211,8 +217,10 @@ while True:
     cv2.imshow("6-7 Detector", fullscreen_output)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
+        print("[EXIT] User requested quit.")
         break
 
 cap.release()
 cv2.destroyAllWindows()
 mp_hands.close()
+print("[SHUTDOWN] Program terminated cleanly.")
