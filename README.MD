@@ -1,4 +1,4 @@
-# Six Seven Thing
+# Six Seven Detector
 
 This is a little Python script that watches your hands through your webcam and waits for you to do the legendary **“6–7” hand motion** (hands yeeting up/down in opposite directions).  
 When you pull it off, a GIF shows up on the right side of your screen.  
